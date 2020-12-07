@@ -20,7 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 import re
 import requests
 import socket
-
+import time
 import numpy as np
 
 from xml.etree import ElementTree as ET
@@ -143,7 +143,7 @@ class FlightAxisConnector(object):
 
     """
 
-    _URL = "biobrain.tplinkdns.com"
+    _URL = "192.168.0.5"
     _PORT = 18083
     _msg = ("POST / HTTP/1.1\n"
             "soapaction: '{}'\n"
@@ -170,6 +170,18 @@ class FlightAxisConnector(object):
         self.average_frame_time_s = 0
         self.socket_frame_counter = 0
         self.state = {
+            "rcin0": 0.5,
+            "rcin1": 0.5,
+            "rcin2": 0.0,
+            "rcin3": 0.5,
+            "rcin4": 0.0,
+            "rcin5": 0.0,
+            "rcin6": 0.0,
+            "rcin7": 0.0,
+            "rcin8": 0.0,
+            "rcin9": 0.0,
+            "rcin10": 0.0,
+            "rcin11": 0.0,
             "m-currentPhysicsTime-SEC": 0,
             "m-currentPhysicsSpeedMultiplier": 1,
             "m-airspeed-MPS": 0,
@@ -219,22 +231,24 @@ class FlightAxisConnector(object):
         }
 
     def exchange_data(self, control_input) -> None:
-        if (not self.controller_started
-                or self.state["m-flightAxisControllerIsActive"] == False
-                or self.state["m-resetButtonHasBeenPressed"]):
-            self.soap_request("RestoreOriginalControllerDevice")
-            self.soap_request("InjectUAVControllerInterface")
-            self.activation_frame_counter = self.frame_counter
-            self.controller_started = True
+        # if (not self.controller_started
+        #         or self.state["m-flightAxisControllerIsActive"] == False
+        #         or self.state["m-resetButtonHasBeenPressed"]):
+        #     self.soap_request("RestoreOriginalControllerDevice")
+        #     self.soap_request("InjectUAVControllerInterface")
+        #     self.activation_frame_counter = self.frame_counter
+        #     self.controller_started = True
 
         action = "ExchangeData"
         servo = control_input.tolist()
         ex_data_msg = ACTION_FMT[action].format(*servo)
+
         reply = self.soap_request(action, ex_data_msg)
+
         if reply:
             lastt_s = self.state["m-currentPhysicsTime-SEC"]
             self.parse_reply(reply)
-            dt = state.m_currentPhysicsTime_SEC - lastt_s
+            dt = self.state["m-currentPhysicsTime-SEC"] - lastt_s
             if 0 < dt < 0.1:
                 if self.average_frame_time_s < 1e-6:
                     self.average_frame_time_s = dt
@@ -243,21 +257,32 @@ class FlightAxisConnector(object):
             self.socket_frame_counter += 1
 
     def parse_reply(self, reply: str) -> None:
-        xml_txt = "".join(reply.split("\n")[-2:])
+        split = reply.split(b'\n')[-2:]
+        xml_txt = b"".join(split)
+        # parser = ET.XMLParser(encoding="utf-8")
         root = ET.fromstring(xml_txt)
+        some_data = root[0][0][0]
+        for stuff in some_data:
+            if(stuff.tag == "m-channelValues-0to1"):
+                counter = 0;
+                for item in stuff:
+                    if item.tag == "item":
+                        state_tag = "rcin"+str(counter)
+                        counter += 1
+                        self.state[state_tag] = parse_tail(item.text)
 
         aircraft_state = root[0][0][1]
         for item in aircraft_state:
             if item.tag in self.state.keys():
-                self.state[item.tag] = parse_tail(item.tail)
+                self.state[item.tag] = parse_tail(item.text)
 
         notification = root[0][0][2]
         for item in notification:
             if item.tag in self.state.keys():
-                self.state[item.tag] = parse_tail(item.tail)
+                self.state[item.tag] = parse_tail(item.text)
 
     def soap_request(self, action: str, body: str = "") -> str:
-        url = "http://biobrain.tplinkdns.com:18083"
+        url = "http://192.168.0.5:18083"
         _msg = ("POST / HTTP/1.1\n"
                 "soapaction: '{}'\n"
                 "content-length: {}\n"
@@ -320,26 +345,32 @@ class FlightAxisConnector(object):
         # _socket.close()
         return data
 
+def mode_manual(_fac):
+    control = np.zeros(12)
+    for i in range(12):
+        tag = "rcin" + str(i)
+        control[i] = _fac.state[tag]
+    return control
 
 if __name__ == "__main__":
     fac = FlightAxisConnector()
-
     action = "RestoreOriginalControllerDevice"
-    print(fac.soap_request(action, ACTION_FMT[action]))
-    print("DEBUG DEBUG DEBUG")
-
+    fac.soap_request(action, ACTION_FMT[action])
     action = "InjectUAVControllerInterface"
-    print(fac.soap_request(action, ACTION_FMT[action]))
-    print("DEBUG DEBUG DEBUG")
+    fac.soap_request(action, ACTION_FMT[action])
 
-    action = "ExchangeData"
-    reply = fac.soap_request(action, ACTION_FMT[action].format(*fac.servos))
-    print(reply)
+    control_input = np.zeros(12)
+    while 1:
+        try:
+            control_input = mode_manual(fac)
 
-    # import time
-    # control_input = np.zeros(12)
-    # for i in np.arange(0, 1, 0.1):
-    #     control_input[0] = i
-    #     fac.exchange_data(control_input)
-    #     #print(fac.state)
-    #     time.sleep(1)
+            fac.exchange_data(control_input)
+        except KeyboardInterrupt:
+            control_input[2] = 0
+            control_input[0] = 0.5
+            control_input[1] = 0.5
+            control_input[3] = 0.5
+            face.exchange_data(control_input)
+        except:
+            pass
+
